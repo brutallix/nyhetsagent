@@ -1,0 +1,17 @@
+{
+  "name": "nyhetsagent-actions",
+  "version": "1.0.0",
+  "description": "Nyhetsagent kjørt headless via GitHub Actions (ingen Electron/UI)",
+  "main": "agent.js",
+  "scripts": {
+    "morning": "node agent.js morning",
+    "evening": "node agent.js evening",
+    "weekly": "node agent.js weekly",
+    "test": "node agent.js test"
+  },
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  }
+}
