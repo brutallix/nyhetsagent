@@ -308,7 +308,15 @@ async function refreshAccessToken() {
     `client_id=${encodeURIComponent(cred.client_id)}&client_secret=${encodeURIComponent(cred.client_secret)}&refresh_token=${encodeURIComponent(token.refresh_token)}&grant_type=refresh_token`
   );
   const d = JSON.parse(r.body);
-  if (!d.access_token) throw new Error(`Gmail refresh feilet: ${d.error} – ${d.error_description}`);
+  if (!d.access_token) {
+    const msg = `Gmail token er utløpt og må fornyes.\n\nFeil: ${d.error} – ${d.error_description}\n\nSlik fikser du det:\n1. Åpne Nyhetsagent-appen på PC-en\n2. Gå til Innstillinger → Koble til Gmail\n3. Gå til myaccount.google.com/permissions → fjern Nyhetsagent\n4. Koble til Gmail på nytt i appen\n5. Kopier innholdet av Dokumenter\\Nyhetsagent\\gmail_token.json\n6. Oppdater GMAIL_TOKEN-secret på GitHub`;
+    // Prøv å sende varsel via SMTP direkte (uten Gmail API siden token er ugyldig)
+    // Logg tydelig til GitHub Actions slik at du ser det i Actions-loggen
+    console.error('\n⚠️  GMAIL TOKEN UTLØPT – MÅ FORNYES\n');
+    console.error(msg);
+    console.error('\nSjekk Actions-loggen på github.com for instruksjoner.\n');
+    throw new Error(`Gmail token utløpt (${d.error}) – sjekk Actions-loggen for instruksjoner`);
+  }
   token.access_token = d.access_token;
   token.expiry_date  = Date.now() + (d.expires_in||3600) * 1000;
   if (d.refresh_token) token.refresh_token = d.refresh_token;
@@ -493,6 +501,17 @@ async function runWeekly() {
     console.log('\nFerdig.');
   } catch (e) {
     console.error('\nFEIL:', e.message);
+    if (e.message.includes('token utløpt') || e.message.includes('refresh_token') || e.message.includes('invalid_grant')) {
+      console.error('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error('GMAIL TOKEN MÅ FORNYES – følg disse stegene:');
+      console.error('1. Åpne Nyhetsagent-appen på PC-en');
+      console.error('2. Gå til myaccount.google.com/permissions');
+      console.error('3. Fjern tilgangen til Nyhetsagent');
+      console.error('4. Koble til Gmail på nytt i appen');
+      console.error('5. Kopier innhold av Dokumenter\\Nyhetsagent\\gmail_token.json');
+      console.error('6. Oppdater GMAIL_TOKEN-secret på GitHub under Settings → Secrets');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    }
     process.exit(1);
   }
 })();
