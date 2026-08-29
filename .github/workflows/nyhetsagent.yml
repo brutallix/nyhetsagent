@@ -1,1 +1,76 @@
+name: Nyhetsagent
 
+on:
+  schedule:
+    # Morgenoppsummering kl. 07:00 Oslo (05:00 UTC sommertid)
+    - cron: '0 5 * * *'
+    # Kveldoppsummering kl. 22:00 Oslo (20:00 UTC sommertid)
+    - cron: '0 20 * * *'
+    # Varsler hver 2. time mellom 08:00–20:00 Oslo (06:00–18:00 UTC sommertid)
+    - cron: '0 6,8,10,12,14,16,18 * * *'
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Kjøringsmodus'
+        required: true
+        default: 'alerts'
+        type: choice
+        options: [alerts, morning, evening, weekly]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Sjekk ut kode
+        uses: actions/checkout@v4
+
+      - name: Last ned sent-cache (unngår duplikater på tvers av kjøringer)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nyhetsagent_*.json
+          key: nyhetsagent-sent-${{ github.run_id }}
+          restore-keys: |
+            nyhetsagent-sent-
+
+      - name: Sett opp Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bestem kjøringsmodus
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          HOUR=$(date -u +%H)
+          echo "UTC-time: $HOUR"
+          if [ "$HOUR" = "05" ]; then
+            echo "mode=morning" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" = "20" ]; then
+            echo "mode=evening" >> $GITHUB_OUTPUT
+          else
+            echo "mode=alerts" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skriv Gmail-filer
+        run: |
+          echo '${{ secrets.GMAIL_TOKEN }}' > gmail_token.json
+          echo '${{ secrets.GMAIL_CREDENTIALS }}' > credentials.json
+
+      - name: Kjør nyhetsagent
+        env:
+          EMAIL_TO:               ${{ secrets.EMAIL_TO }}
+          ANTHROPIC_KEY:          ${{ secrets.ANTHROPIC_KEY }}
+          SPOTIFY_CLIENT_ID:      ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET:  ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          ENABLED_FEEDS:          ${{ secrets.ENABLED_FEEDS }}
+        run: node agent.js ${{ steps.mode.outputs.mode }}
+
+      - name: Rydd opp hemmeligheter
+        if: always()
+        run: rm -f gmail_token.json credentials.json
