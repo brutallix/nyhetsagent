@@ -59,12 +59,20 @@ jobs:
 
       - name: Skriv Gmail-filer
         run: |
-          echo '${{ secrets.GMAIL_TOKEN }}' > gmail_token.json
-          echo '${{ secrets.GMAIL_CREDENTIALS }}' > credentials.json
+          echo '${{ secrets.GMAIL_TOKEN }}' > {
+  "access_token": "ya29.a0AdMD6Egn9UcJDNwN8nPWMBeEEUUonZh-yOYBSHovXYhtLMNQ-qB4PW9X5MjGVihpWtjqaukAYXqPsYbawdoJT3QsmD48Afzt2crJbbkrRvM-tJy89LvJoxsNAPjfzasiceWcWYY6Xd9HDhS6YyxNobw0HbmdL65J_UJV9IXmOOzvw7Fn42Gss6Xvire-JQxn5F_px8saCgYKAfQSARISFQHGX2MiMUQj-KagwDkKNK2sxwsqlg0206",
+  "expires_in": 3599,
+  "refresh_token": "1//0c-Rdu913IboPCgYIARAAGAwSNwF-L9IrCbgKOIOupb_pO4HfkdnraAdOPU9VLqwUNIaMO8wKABn-Phq-MDh5jifRweyTIXZPi4k",
+  "scope": "https://www.googleapis.com/auth/gmail.send",
+  "token_type": "Bearer",
+  "refresh_token_expires_in": 604799,
+  "expiry_date": 1788011834955
+}
+          echo '${{ secrets.GMAIL_CREDENTIALS }}' > {"installed":{"client_id":"741856190365-8tt9s37b6go7o6obkj511cfc5mbku1i8.apps.googleusercontent.com","project_id":"nyhetsagent","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_secret":"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","redirect_uris":["http://localhost"]}}
 
       - name: Kjør nyhetsagent
         env:
-          EMAIL_TO:               ${{ secrets.EMAIL_TO }}
+          EMAIL_TO:               ${{ bmrist@gmail.com }}
           ANTHROPIC_KEY:          ${{ secrets.ANTHROPIC_KEY }}
           SPOTIFY_CLIENT_ID:      ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET:  ${{ secrets.SPOTIFY_CLIENT_SECRET }}
