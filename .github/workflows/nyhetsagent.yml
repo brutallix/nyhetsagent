@@ -26,13 +26,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache sent-log
-        uses: actions/cache@v4
+      - name: Restore sent-cache
+        uses: actions/cache/restore@v4
         with:
-          path: /tmp/nyhetsagent_*.json
-          key: nyhetsagent-sent-${{ github.run_id }}
-          restore-keys: |
-            nyhetsagent-sent-
+          path: /tmp/nyhetsagent_sent.json
+          key: nyhetsagent-sent-v1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -48,9 +46,9 @@ jobs:
           fi
           HOUR=$(date -u +%H)
           echo "UTC hour: $HOUR"
-          if [ "$HOUR" = "05" ]; then
+          if [ "$HOUR" = "06" ]; then
             echo "mode=morning" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "20" ]; then
+          elif [ "$HOUR" = "21" ]; then
             echo "mode=evening" >> $GITHUB_OUTPUT
           else
             echo "mode=alerts" >> $GITHUB_OUTPUT
@@ -70,6 +68,19 @@ jobs:
           ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
         run: node agent.js ${{ steps.mode.outputs.mode }}
 
+      - name: Save sent-cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: /tmp/nyhetsagent_sent.json
+          key: nyhetsagent-sent-v1-${{ github.run_id }}
+
       - name: Cleanup
         if: always()
         run: rm -f gmail_token.json credentials.json
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Workflow feilet - sjekk loggen over for instruksjoner"
+          echo "Mest sannsynlig er Gmail-token utlopt og ma fornyes"
