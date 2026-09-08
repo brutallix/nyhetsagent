@@ -22,20 +22,26 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Restore sent-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: /tmp/nyhetsagent_sent.json
-          key: nyhetsagent-sent-v1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      - name: Copy sent-log to tmp
+        run: |
+          if [ -f data/sent.json ]; then
+            cp data/sent.json /tmp/nyhetsagent_sent.json
+            echo "Gjenopprettet sent-logg ($(wc -c < data/sent.json) bytes)"
+          else
+            echo "Ingen tidligere sent-logg funnet"
+          fi
 
       - name: Determine mode
         id: mode
@@ -68,19 +74,22 @@ jobs:
           ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
         run: node agent.js ${{ steps.mode.outputs.mode }}
 
-      - name: Save sent-cache
-        uses: actions/cache/save@v4
+      - name: Save sent-log to repo
         if: always()
-        with:
-          path: /tmp/nyhetsagent_sent.json
-          key: nyhetsagent-sent-v1-${{ github.run_id }}
+        run: |
+          if [ -f /tmp/nyhetsagent_sent.json ]; then
+            mkdir -p data
+            cp /tmp/nyhetsagent_sent.json data/sent.json
+            git config user.name "Nyhetsagent"
+            git config user.email "nyhetsagent@github"
+            git add data/sent.json
+            git diff --staged --quiet || git commit -m "Update sent-log [skip ci]"
+            git push
+            echo "Sent-logg lagret ($(wc -c < data/sent.json) bytes)"
+          else
+            echo "Ingen sent-logg å lagre"
+          fi
 
       - name: Cleanup
         if: always()
         run: rm -f gmail_token.json credentials.json
-
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "Workflow feilet - sjekk loggen over for instruksjoner"
-          echo "Mest sannsynlig er Gmail-token utlopt og ma fornyes"
