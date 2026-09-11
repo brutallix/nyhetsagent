@@ -52,9 +52,18 @@ jobs:
           fi
           HOUR=$(date -u +%H)
           echo "UTC hour: $HOUR"
-          if [ "$HOUR" = "06" ]; then
-            echo "mode=morning" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "21" ]; then
+          # Morgen: 06 eller 07 UTC (07:00-08:00 norsk vintertid, buffer for forsinkelse)
+          if [ "$HOUR" = "06" ] || [ "$HOUR" = "07" ]; then
+            # Sjekk at det ikke allerede er sendt morgenoppsummering i dag
+            TODAY=$(date -u +%Y-%m-%d)
+            if [ -f data/morning_sent.txt ] && grep -q "$TODAY" data/morning_sent.txt 2>/dev/null; then
+              echo "Morgenoppsummering allerede sendt i dag – kjorer alerts"
+              echo "mode=alerts" >> $GITHUB_OUTPUT
+            else
+              echo "mode=morning" >> $GITHUB_OUTPUT
+            fi
+          # Kveld: 21 UTC (22:00 norsk vintertid)
+          elif [ "$HOUR" = "21" ] || [ "$HOUR" = "22" ]; then
             echo "mode=evening" >> $GITHUB_OUTPUT
           else
             echo "mode=alerts" >> $GITHUB_OUTPUT
@@ -73,6 +82,18 @@ jobs:
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
         run: node agent.js ${{ steps.mode.outputs.mode }}
+
+      - name: Mark morning as sent
+        if: steps.mode.outputs.mode == 'morning'
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          mkdir -p data
+          echo "$TODAY" > data/morning_sent.txt
+          git config user.name "Nyhetsagent"
+          git config user.email "nyhetsagent@github"
+          git add data/morning_sent.txt
+          git diff --staged --quiet || git commit -m "Mark morning sent $TODAY [skip ci]"
+          git push
 
       - name: Save sent-log to repo
         if: always()
