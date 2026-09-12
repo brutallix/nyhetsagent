@@ -45,9 +45,9 @@ function loadToken() {
   return _token;
 }
 
-const TMP       = process.env.RUNNER_TEMP || '/tmp';
-const SENT_FILE = path.join(TMP, 'nyhetsagent_sent.json');
-const LAST_FILE = path.join(TMP, 'nyhetsagent_last_email.json');
+// Bruk alltid /tmp slik at workflow-filen finner filene på samme sted
+const SENT_FILE = '/tmp/nyhetsagent_sent.json';
+const LAST_FILE = '/tmp/nyhetsagent_last_email.json';
 
 function loadSent() {
   try {
@@ -157,15 +157,38 @@ const INFLUENCER_KEYWORDS = [
   'emma chamberlain','david dobrik','james charles','jeffree star',
 ];
 
+// Norske kilder vises først i e-post
+const NORWEGIAN_SOURCES = ['VG', 'NRK', 'Aftenposten', 'TV2', 'Nettavisen'];
+
+// Promo-fraser som filtreres bort
+const PROMO_KEYWORDS = [
+  'promo code','promo kode','discount code','coupon code','use code',
+  'rabattkode','bruk kode','klikk her for','sponsored','advertisement',
+  'affiliate','paid partnership','annons',
+];
+
 function shouldFilter(item) {
   const text = ((item.title||'') + ' ' + (item.description||'')).toLowerCase();
   if (REALITY_KEYWORDS.some(kw => text.includes(kw))) return true;
   if (INFLUENCER_KEYWORDS.some(kw => text.includes(kw))) return true;
+  if (PROMO_KEYWORDS.some(kw => text.includes(kw))) return true;
   if (SPORT_KEYWORDS.some(kw => text.includes(kw))) {
     if (NORWAY_NATIONAL_TEAM.some(kw => text.includes(kw))) return false;
     return true;
   }
   return false;
+}
+
+// Sorter artikler: norske kilder først, deretter resten alfabetisk
+function sortBySource(items) {
+  return [...items].sort((a, b) => {
+    const ai = NORWEGIAN_SOURCES.indexOf(a.source);
+    const bi = NORWEGIAN_SOURCES.indexOf(b.source);
+    if (ai !== -1 && bi !== -1) return ai - bi;       // begge norske: behold rekkefølge
+    if (ai !== -1) return -1;                          // a er norsk, b ikke
+    if (bi !== -1) return 1;                           // b er norsk, a ikke
+    return a.source.localeCompare(b.source);           // begge utenlandske: alfabetisk
+  });
 }
 
 // ── Dedup ─────────────────────────────────────────────────────────────────────
@@ -375,7 +398,8 @@ async function aiSummary(items) {
 
 function buildBody(label, items, summary) {
   const now      = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
-  const itemList = items.slice(0,25).map(i =>
+  const sorted   = sortBySource(items.slice(0,25));
+  const itemList = sorted.map(i =>
     `• [${i.source}] ${i.title}${i.link ? '\n  ' + i.link : ''}`
   ).join('\n\n');
   return summary
@@ -400,11 +424,13 @@ async function runAlerts() {
       if (Date.now() - last < 110 * 60 * 1000) { console.log('For tidlig siden siste sending.'); return; }
     }
   } catch (e) {}
-  const now  = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
-  const body = Object.entries(
-    filtered.reduce((acc, i) => { (acc[i.source] = acc[i.source]||[]).push(i); return acc; }, {})
-  ).map(([src, its]) =>
-    `━━ ${src} ━━\n` + its.map(i =>
+  const now     = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
+  const sorted  = sortBySource(filtered);
+  const grouped = sorted.reduce((acc, i) => { (acc[i.source] = acc[i.source]||[]).push(i); return acc; }, {});
+  // Bygg e-post med norske kilder øverst
+  const sourceOrder = [...new Set(sorted.map(i => i.source))];
+  const body = sourceOrder.map(src =>
+    `━━ ${src} ━━\n` + grouped[src].map(i =>
       `• ${i.title}${i.description ? '\n  ' + i.description.slice(0,150) : ''}${i.link ? '\n  ' + i.link : ''}`
     ).join('\n\n')
   ).join('\n\n');
