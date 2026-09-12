@@ -2,9 +2,8 @@ name: Nyhetsagent
 
 on:
   schedule:
-    - cron: '0 6 * * *'
-    - cron: '0 21 * * *'
-    - cron: '0 7,9,11,13,15,17,19 * * *'
+    # Kjorer hver time 06-22 UTC (07-23 norsk vintertid)
+    - cron: '0 6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -50,21 +49,30 @@ jobs:
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
             exit 0
           fi
+
           HOUR=$(date -u +%H)
-          echo "UTC hour: $HOUR"
-          # Morgen: 06 eller 07 UTC (07:00-08:00 norsk vintertid, buffer for forsinkelse)
-          if [ "$HOUR" = "06" ] || [ "$HOUR" = "07" ]; then
-            # Sjekk at det ikke allerede er sendt morgenoppsummering i dag
-            TODAY=$(date -u +%Y-%m-%d)
+          TODAY=$(date -u +%Y-%m-%d)
+          echo "UTC hour: $HOUR, dato: $TODAY"
+
+          # Morgen: kl 06-10 UTC (07-11 norsk), send hvis ikke sendt i dag
+          if [ "$HOUR" -ge 6 ] && [ "$HOUR" -le 10 ]; then
             if [ -f data/morning_sent.txt ] && grep -q "$TODAY" data/morning_sent.txt 2>/dev/null; then
               echo "Morgenoppsummering allerede sendt i dag – kjorer alerts"
               echo "mode=alerts" >> $GITHUB_OUTPUT
             else
               echo "mode=morning" >> $GITHUB_OUTPUT
             fi
-          # Kveld: 21 UTC (22:00 norsk vintertid)
-          elif [ "$HOUR" = "21" ] || [ "$HOUR" = "22" ]; then
-            echo "mode=evening" >> $GITHUB_OUTPUT
+
+          # Kveld: kl 21-22 UTC (22-23 norsk), send hvis ikke sendt i dag
+          elif [ "$HOUR" -ge 21 ] && [ "$HOUR" -le 22 ]; then
+            if [ -f data/evening_sent.txt ] && grep -q "$TODAY" data/evening_sent.txt 2>/dev/null; then
+              echo "Kveldoppsummering allerede sendt i dag – kjorer alerts"
+              echo "mode=alerts" >> $GITHUB_OUTPUT
+            else
+              echo "mode=evening" >> $GITHUB_OUTPUT
+            fi
+
+          # Resten: varsler
           else
             echo "mode=alerts" >> $GITHUB_OUTPUT
           fi
@@ -92,7 +100,19 @@ jobs:
           git config user.name "Nyhetsagent"
           git config user.email "nyhetsagent@github"
           git add data/morning_sent.txt
-          git diff --staged --quiet || git commit -m "Mark morning sent $TODAY [skip ci]"
+          git diff --staged --quiet || git commit -m "Morning sent $TODAY [skip ci]"
+          git push
+
+      - name: Mark evening as sent
+        if: steps.mode.outputs.mode == 'evening'
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          mkdir -p data
+          echo "$TODAY" > data/evening_sent.txt
+          git config user.name "Nyhetsagent"
+          git config user.email "nyhetsagent@github"
+          git add data/evening_sent.txt
+          git diff --staged --quiet || git commit -m "Evening sent $TODAY [skip ci]"
           git push
 
       - name: Save sent-log to repo
