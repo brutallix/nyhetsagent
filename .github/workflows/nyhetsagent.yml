@@ -1,23 +1,6 @@
 name: Nyhetsagent
 
 on:
-  schedule:
-    - cron: '0 6 * * *'
-    - cron: '0 7 * * *'
-    - cron: '0 8 * * *'
-    - cron: '0 9 * * *'
-    - cron: '0 10 * * *'
-    - cron: '0 11 * * *'
-    - cron: '0 12 * * *'
-    - cron: '0 13 * * *'
-    - cron: '0 14 * * *'
-    - cron: '0 15 * * *'
-    - cron: '0 16 * * *'
-    - cron: '0 17 * * *'
-    - cron: '0 18 * * *'
-    - cron: '0 19 * * *'
-    - cron: '0 20 * * *'
-    - cron: '0 21 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -56,36 +39,6 @@ jobs:
             echo "Ingen tidligere sent-logg funnet"
           fi
 
-      - name: Determine mode
-        id: mode
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          HOUR=$(date -u +%H)
-          TODAY=$(date -u +%Y-%m-%d)
-          echo "UTC hour: $HOUR, dato: $TODAY"
-
-          if [ "$HOUR" -ge 6 ] && [ "$HOUR" -le 10 ]; then
-            if [ -f data/morning_sent.txt ] && grep -q "$TODAY" data/morning_sent.txt 2>/dev/null; then
-              echo "Morgenoppsummering allerede sendt i dag"
-              echo "mode=alerts" >> $GITHUB_OUTPUT
-            else
-              echo "mode=morning" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$HOUR" -ge 20 ] && [ "$HOUR" -le 22 ]; then
-            if [ -f data/evening_sent.txt ] && grep -q "$TODAY" data/evening_sent.txt 2>/dev/null; then
-              echo "Kveldoppsummering allerede sendt i dag"
-              echo "mode=alerts" >> $GITHUB_OUTPUT
-            else
-              echo "mode=evening" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "mode=alerts" >> $GITHUB_OUTPUT
-          fi
-
       - name: Write Gmail files
         run: |
           echo '${{ secrets.GMAIL_TOKEN }}' > gmail_token.json
@@ -98,10 +51,10 @@ jobs:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
-        run: node agent.js ${{ steps.mode.outputs.mode }}
+        run: node agent.js ${{ github.event.inputs.mode }}
 
       - name: Mark morning as sent
-        if: steps.mode.outputs.mode == 'morning'
+        if: github.event.inputs.mode == 'morning'
         run: |
           TODAY=$(date -u +%Y-%m-%d)
           mkdir -p data
@@ -113,7 +66,7 @@ jobs:
           git push
 
       - name: Mark evening as sent
-        if: steps.mode.outputs.mode == 'evening'
+        if: github.event.inputs.mode == 'evening'
         run: |
           TODAY=$(date -u +%Y-%m-%d)
           mkdir -p data
