@@ -167,13 +167,21 @@ const PROMO_KEYWORDS = [
   'affiliate','paid partnership','annons',
 ];
 
+// Fotball-resultater fra disse ligaene beholdes
+const ALLOWED_FOOTBALL = [
+  'eliteserien','premier league',
+];
+
 function shouldFilter(item) {
   const text = ((item.title||'') + ' ' + (item.description||'')).toLowerCase();
   if (REALITY_KEYWORDS.some(kw => text.includes(kw))) return true;
   if (INFLUENCER_KEYWORDS.some(kw => text.includes(kw))) return true;
   if (PROMO_KEYWORDS.some(kw => text.includes(kw))) return true;
   if (SPORT_KEYWORDS.some(kw => text.includes(kw))) {
+    // Behold norske landskamper
     if (NORWAY_NATIONAL_TEAM.some(kw => text.includes(kw))) return false;
+    // Behold Eliteserien og Premier League resultater
+    if (ALLOWED_FOOTBALL.some(kw => text.includes(kw))) return false;
     return true;
   }
   return false;
@@ -266,11 +274,33 @@ function decode(s) {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
 }
 
+async function resolveGoogleNewsUrl(link) {
+  // Følg redirect fra Google News for å få ekte URL
+  return new Promise((resolve) => {
+    try {
+      const req = https.get(link, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 5000,
+      }, res => {
+        res.resume();
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          resolve(res.headers.location);
+        } else {
+          resolve(link);
+        }
+      });
+      req.on('error', () => resolve(link));
+      req.on('timeout', () => { req.destroy(); resolve(link); });
+    } catch (e) { resolve(link); }
+  });
+}
+
 function cleanLink(link) {
   if (!link) return '';
   if (link.includes('news.google.com')) {
     try { const u = new URL(link); const orig = u.searchParams.get('url'); if (orig) return orig; } catch (e) {}
-    return link.split('?')[0];
+    // Returner Google News-lenken midlertidig, resolves asynkront i fetchFeeds
+    return link;
   }
   return link;
 }
@@ -317,6 +347,14 @@ async function fetchFeeds(cat) {
     catch (e) { errors.push(`${feed.name}: ${e.message}`); console.error(`  ✗ ${feed.name}: ${e.message}`); }
   }));
   applyRoutes(results);
+
+  // Løs opp Google News redirect-URLer for AP News
+  await Promise.all(results.map(async item => {
+    if (item.link && item.link.includes('news.google.com')) {
+      item.link = await resolveGoogleNewsUrl(item.link);
+    }
+  }));
+
   return { items: dedupItems(results), errors };
 }
 
