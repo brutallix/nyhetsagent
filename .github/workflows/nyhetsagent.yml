@@ -39,14 +39,10 @@ jobs:
             echo "Ingen tidligere sent-logg funnet"
           fi
 
-      - name: Write Gmail files
-        run: |
-          echo '${{ secrets.GMAIL_TOKEN }}' > gmail_token.json
-          echo '${{ secrets.GMAIL_CREDENTIALS }}' > credentials.json
-
       - name: Run agent
         env:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
@@ -92,7 +88,3 @@ jobs:
           else
             echo "Ingen sent-logg å lagre"
           fi
-
-      - name: Cleanup
-        if: always()
-        run: rm -f gmail_token.json credentials.json
