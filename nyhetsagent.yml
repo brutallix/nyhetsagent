@@ -1,76 +1,83 @@
 name: Nyhetsagent
 
 on:
-  schedule:
-    # Morgenoppsummering kl. 07:00 Oslo (05:00 UTC sommertid)
-    - cron: '0 5 * * *'
-    # Kveldoppsummering kl. 22:00 Oslo (20:00 UTC sommertid)
-    - cron: '0 20 * * *'
-    # Varsler hver 2. time mellom 08:00–20:00 Oslo (06:00–18:00 UTC sommertid)
-    - cron: '0 6,8,10,12,14,16,18 * * *'
-
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Kjøringsmodus'
+        description: 'Mode'
         required: true
         default: 'alerts'
         type: choice
-        options: [alerts, morning, evening, weekly]
+        options:
+          - alerts
+          - morning
+          - evening
+          - weekly
+
+concurrency:
+  group: nyhetsagent
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
 
     steps:
-      - name: Sjekk ut kode
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Last ned sent-cache (unngår duplikater på tvers av kjøringer)
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nyhetsagent_*.json
-          key: nyhetsagent-sent-${{ github.run_id }}
-          restore-keys: |
-            nyhetsagent-sent-
-
-      - name: Sett opp Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
-      - name: Bestem kjøringsmodus
-        id: mode
+      - name: Copy sent-log to tmp
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          HOUR=$(date -u +%H)
-          echo "UTC-time: $HOUR"
-          if [ "$HOUR" = "05" ]; then
-            echo "mode=morning" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" = "20" ]; then
-            echo "mode=evening" >> $GITHUB_OUTPUT
+          if [ -f data/sent.json ]; then
+            cp data/sent.json /tmp/nyhetsagent_sent.json
+            echo "Gjenopprettet sent-logg ($(wc -c < data/sent.json) bytes)"
           else
-            echo "mode=alerts" >> $GITHUB_OUTPUT
+            echo "Ingen tidligere sent-logg funnet"
           fi
 
-      - name: Skriv Gmail-filer
-        run: |
-          echo '${{ secrets.GMAIL_TOKEN }}' > gmail_token.json
-          echo '${{ secrets.GMAIL_CREDENTIALS }}' > credentials.json
-
-      - name: Kjør nyhetsagent
+      - name: Run agent
         env:
-          EMAIL_TO:               ${{ secrets.EMAIL_TO }}
-          ANTHROPIC_KEY:          ${{ secrets.ANTHROPIC_KEY }}
-          SPOTIFY_CLIENT_ID:      ${{ secrets.SPOTIFY_CLIENT_ID }}
-          SPOTIFY_CLIENT_SECRET:  ${{ secrets.SPOTIFY_CLIENT_SECRET }}
-          ENABLED_FEEDS:          ${{ secrets.ENABLED_FEEDS }}
-        run: node agent.js ${{ steps.mode.outputs.mode }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          GMAIL_TOKEN: ${{ secrets.GMAIL_TOKEN }}
+          GMAIL_CREDENTIALS: ${{ secrets.GMAIL_CREDENTIALS }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
+        run: node agent.js ${{ github.event.inputs.mode }}
 
-      - name: Rydd opp hemmeligheter
+      - name: Save state to repo
         if: always()
-        run: rm -f gmail_token.json credentials.json
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          MODE="${{ github.event.inputs.mode }}"
+          mkdir -p data
+          [ -f /tmp/nyhetsagent_sent.json ] && cp /tmp/nyhetsagent_sent.json data/sent.json
+          [ "$MODE" = "morning" ] && echo "$TODAY" > data/morning_sent.txt
+          [ "$MODE" = "evening" ] && echo "$TODAY" > data/evening_sent.txt
+
+          git config user.name "Nyhetsagent"
+          git config user.email "nyhetsagent@github"
+          git add data/
+          git diff --staged --quiet && { echo "Ingen endringer å lagre"; exit 0; }
+          git commit -m "Update state [skip ci]"
+
+          # Retry ved midlertidige GitHub-feil (HTTP 500 osv.)
+          for i in 1 2 3 4 5; do
+            git pull --rebase -X theirs origin main && git push && { echo "Lagret (forsøk $i)"; exit 0; }
+            echo "Push feilet (forsøk $i) – venter $((i*10)) sek"
+            sleep $((i*10))
+          done
+
+          # Ikke la en push-feil felle hele kjøringen – e-posten er allerede sendt
+          echo "::warning::Kunne ikke lagre state etter 5 forsøk"
+          exit 0
