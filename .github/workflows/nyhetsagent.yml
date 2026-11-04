@@ -14,6 +14,10 @@ on:
           - evening
           - weekly
 
+concurrency:
+  group: nyhetsagent
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -49,42 +53,29 @@ jobs:
           ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
         run: node agent.js ${{ github.event.inputs.mode }}
 
-      - name: Mark morning as sent
-        if: github.event.inputs.mode == 'morning'
-        run: |
-          TODAY=$(date -u +%Y-%m-%d)
-          mkdir -p data
-          echo "$TODAY" > data/morning_sent.txt
-          git config user.name "Nyhetsagent"
-          git config user.email "nyhetsagent@github"
-          git add data/morning_sent.txt
-          git diff --staged --quiet || git commit -m "Morning sent $TODAY [skip ci]"
-          git push
-
-      - name: Mark evening as sent
-        if: github.event.inputs.mode == 'evening'
-        run: |
-          TODAY=$(date -u +%Y-%m-%d)
-          mkdir -p data
-          echo "$TODAY" > data/evening_sent.txt
-          git config user.name "Nyhetsagent"
-          git config user.email "nyhetsagent@github"
-          git add data/evening_sent.txt
-          git diff --staged --quiet || git commit -m "Evening sent $TODAY [skip ci]"
-          git push
-
-      - name: Save sent-log to repo
+      - name: Save state to repo
         if: always()
         run: |
-          if [ -f /tmp/nyhetsagent_sent.json ]; then
-            mkdir -p data
-            cp /tmp/nyhetsagent_sent.json data/sent.json
-            git config user.name "Nyhetsagent"
-            git config user.email "nyhetsagent@github"
-            git add data/sent.json
-            git diff --staged --quiet || git commit -m "Update sent-log [skip ci]"
-            git push
-            echo "Sent-logg lagret ($(wc -c < data/sent.json) bytes)"
-          else
-            echo "Ingen sent-logg å lagre"
-          fi
+          TODAY=$(date -u +%Y-%m-%d)
+          MODE="${{ github.event.inputs.mode }}"
+          mkdir -p data
+          [ -f /tmp/nyhetsagent_sent.json ] && cp /tmp/nyhetsagent_sent.json data/sent.json
+          [ "$MODE" = "morning" ] && echo "$TODAY" > data/morning_sent.txt
+          [ "$MODE" = "evening" ] && echo "$TODAY" > data/evening_sent.txt
+
+          git config user.name "Nyhetsagent"
+          git config user.email "nyhetsagent@github"
+          git add data/
+          git diff --staged --quiet && { echo "Ingen endringer å lagre"; exit 0; }
+          git commit -m "Update state [skip ci]"
+
+          # Retry ved midlertidige GitHub-feil (HTTP 500 osv.)
+          for i in 1 2 3 4 5; do
+            git pull --rebase -X theirs origin main && git push && { echo "Lagret (forsøk $i)"; exit 0; }
+            echo "Push feilet (forsøk $i) – venter $((i*10)) sek"
+            sleep $((i*10))
+          done
+
+          # Ikke la en push-feil felle hele kjøringen – e-posten er allerede sendt
+          echo "::warning::Kunne ikke lagre state etter 5 forsøk"
+          exit 0
