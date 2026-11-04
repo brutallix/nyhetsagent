@@ -4,8 +4,7 @@
  * Nyhetsagent – GitHub Actions-versjon (synkronisert med _20)
  *
  * Påkrevde GitHub Secrets:
- *   GMAIL_TOKEN         – innhold av Dokumenter\Nyhetsagent\gmail_token.json
- *   GMAIL_CREDENTIALS   – innhold av credentials.json (fra app-mappen)
+ *   SENDGRID_API_KEY    – API-nøkkel fra app.sendgrid.com (starter med SG.)
  *   EMAIL_TO            – din e-postadresse
  *
  * Valgfrie secrets:
@@ -21,31 +20,12 @@ const http  = require('http');
 
 const MODE       = process.argv[2] || 'alerts';
 const EMAIL_TO   = process.env.EMAIL_TO                || '';
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY  || '';
+const EMAIL_FROM = process.env.SENDGRID_FROM_EMAIL     || EMAIL_TO;
 const ANTHROPIC  = process.env.ANTHROPIC_KEY           || '';
 const SPOTIFY_ID = process.env.SPOTIFY_CLIENT_ID       || '';
 const SPOTIFY_SC = process.env.SPOTIFY_CLIENT_SECRET   || '';
 
-// ── Credentials & token ───────────────────────────────────────────────────────
-
-function loadCreds() {
-  const raw = process.env.GMAIL_CREDENTIALS
-    ? JSON.parse(process.env.GMAIL_CREDENTIALS)
-    : JSON.parse(fs.readFileSync('credentials.json', 'utf-8'));
-  const c = raw.installed || raw.web;
-  if (!c) throw new Error('Ugyldig credentials.json');
-  return c;
-}
-
-let _token = null;
-function loadToken() {
-  if (_token) return _token;
-  _token = process.env.GMAIL_TOKEN
-    ? JSON.parse(process.env.GMAIL_TOKEN)
-    : JSON.parse(fs.readFileSync('gmail_token.json', 'utf-8'));
-  return _token;
-}
-
-// Bruk alltid /tmp slik at workflow-filen finner filene på samme sted
 const SENT_FILE = '/tmp/nyhetsagent_sent.json';
 const LAST_FILE = '/tmp/nyhetsagent_last_email.json';
 
@@ -178,7 +158,7 @@ const EXCLUDED_RESULT_LEAGUES = [
   'swedish football','svensk fotball',
 ];
 
-const SPORTS_RESULT_PATTERN = /\b(?:results?|scores?|beat|beats|defeats?|defeated|wins?|won|loses?|lost|victories?|draws?|full time|final score|match report|game recap)\b|\b\d+\s*[-–:]\s*\d+\b/i;
+const SPORTS_RESULT_PATTERN = /\b(?:results?|scores?|beat|beats|defeats?|defeated|wins?|won|loses?|lost|victories?|draws?|full time|final score|match report|game recap|resultat(?:er)?|vant|seier|tapte|uavgjort|beseiret|oavgjort)\b|\b\d+\s*[-–:]\s*\d+\b/i;
 
 function shouldFilter(item) {
   const text = ((item.title||'') + ' ' + (item.description||'')).toLowerCase();
@@ -376,62 +356,34 @@ async function fetchFeeds(cat) {
   return { items: dedupItems(results), errors };
 }
 
-// ── Gmail ─────────────────────────────────────────────────────────────────────
+// ── SendGrid e-post ───────────────────────────────────────────────────────────
 
-async function refreshAccessToken() {
-  const cred  = loadCreds();
-  const token = loadToken();
-  if (!token.refresh_token) throw new Error('Ingen refresh_token – koble til Gmail på nytt i appen og oppdater GMAIL_TOKEN-secret');
-  const r = await httpsPost('oauth2.googleapis.com', '/token',
-    { 'Content-Type': 'application/x-www-form-urlencoded' },
-    `client_id=${encodeURIComponent(cred.client_id)}&client_secret=${encodeURIComponent(cred.client_secret)}&refresh_token=${encodeURIComponent(token.refresh_token)}&grant_type=refresh_token`
-  );
-  const d = JSON.parse(r.body);
-  if (!d.access_token) {
-    const msg = `Gmail token er utløpt og må fornyes.\n\nFeil: ${d.error} – ${d.error_description}\n\nSlik fikser du det:\n1. Åpne Nyhetsagent-appen på PC-en\n2. Gå til Innstillinger → Koble til Gmail\n3. Gå til myaccount.google.com/permissions → fjern Nyhetsagent\n4. Koble til Gmail på nytt i appen\n5. Kopier innholdet av Dokumenter\\Nyhetsagent\\gmail_token.json\n6. Oppdater GMAIL_TOKEN-secret på GitHub`;
-    // Prøv å sende varsel via SMTP direkte (uten Gmail API siden token er ugyldig)
-    // Logg tydelig til GitHub Actions slik at du ser det i Actions-loggen
-    console.error('\n⚠️  GMAIL TOKEN UTLØPT – MÅ FORNYES\n');
-    console.error(msg);
-    console.error('\nSjekk Actions-loggen på github.com for instruksjoner.\n');
-    throw new Error(`Gmail token utløpt (${d.error}) – sjekk Actions-loggen for instruksjoner`);
-  }
-  token.access_token = d.access_token;
-  token.expiry_date  = Date.now() + (d.expires_in||3600) * 1000;
-  if (d.refresh_token) token.refresh_token = d.refresh_token;
-  _token = token;
-  return token.access_token;
-}
-
-async function getAccessToken() {
-  const token = loadToken();
-  if (Date.now() > (token.expiry_date||0) - 60000) return refreshAccessToken();
-  return token.access_token;
-}
-
-async function sendGmail(to, subject, bodyText) {
-  const accessToken = await getAccessToken();
-  const subjectB64  = '=?utf-8?B?' + Buffer.from(subject, 'utf-8').toString('base64') + '?=';
+async function sendEmail(to, subject, bodyText) {
+  if (!SENDGRID_API_KEY) throw new Error('SENDGRID_API_KEY mangler – legg inn som GitHub Secret');
   const html = '<html><body><pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;word-wrap:break-word">'
     + bodyText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     + '</pre></body></html>';
-  const raw = Buffer.from(
-    `From: me\r\nTo: ${to}\r\nSubject: ${subjectB64}\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n`
-    + Buffer.from(html, 'utf-8').toString('base64')
-  ).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-
+  const payload = JSON.stringify({
+    personalizations: [{ to: [{ email: to }] }],
+    from: { email: EMAIL_FROM },
+    subject,
+    content: [{ type: 'text/html', value: html }],
+  });
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ raw });
     const req = https.request({
-      hostname: 'gmail.googleapis.com',
-      path: '/gmail/v1/users/me/messages/send',
+      hostname: 'api.sendgrid.com',
+      path: '/v3/mail/send',
       method: 'POST',
-      headers: { 'Authorization':`Bearer ${accessToken}`, 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(payload) }
+      headers: {
+        'Authorization': `Bearer ${SENDGRID_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      }
     }, res => {
       const c = []; res.on('data', d => c.push(d));
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) resolve();
-        else reject(new Error(`Gmail send feilet: HTTP ${res.statusCode} – ${Buffer.concat(c).toString()}`));
+        else reject(new Error(`SendGrid feilet: HTTP ${res.statusCode} – ${Buffer.concat(c).toString()}`));
       });
     });
     req.on('error', reject); req.write(payload); req.end();
@@ -490,7 +442,7 @@ async function runAlerts() {
       `• ${i.title}${i.description ? '\n  ' + i.description.slice(0,150) : ''}${i.link ? '\n  ' + i.link : ''}`
     ).join('\n\n')
   ).join('\n\n');
-  await sendGmail(EMAIL_TO, `Nyhetsagent: ${filtered.length} nye varsler – ${now}`, body);
+  await sendEmail(EMAIL_TO, `Nyhetsagent: ${filtered.length} nye varsler – ${now}`, body);
   console.log(`✓ Sendt ${filtered.length} varsler`);
   filtered.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -514,7 +466,7 @@ async function runMorning() {
   if (!night.length) { console.log('Ingen nattlige nyheter.'); return; }
   const summary = await aiSummary(night);
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendGmail(EMAIL_TO, `Morgenoppsummering – ${dateStr}`, buildBody('Morgenoppsummering', night, summary));
+  await sendEmail(EMAIL_TO, `Morgenoppsummering – ${dateStr}`, buildBody('Morgenoppsummering', night, summary));
   console.log(`✓ Morgenoppsummering sendt (${night.length} saker)`);
   night.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -531,7 +483,7 @@ async function runEvening() {
   if (!day.length) { console.log('Ingen nye dagsaker.'); return; }
   const summary = await aiSummary(day);
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendGmail(EMAIL_TO, `Kveldoppsummering – ${dateStr}`, buildBody('Kveldoppsummering', day, summary));
+  await sendEmail(EMAIL_TO, `Kveldoppsummering – ${dateStr}`, buildBody('Kveldoppsummering', day, summary));
   console.log(`✓ Kveldoppsummering sendt (${day.length} saker)`);
   day.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -567,7 +519,7 @@ async function runWeekly() {
   if (spotifyList)   parts.push('\n\n═══ SPOTIFY – TRENDENDE LÅTER ═══\n' + spotifyList);
   parts.push('\n\n─────\nNyhetsagent');
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendGmail(EMAIL_TO, `Ukentlig oppsummering – ${dateStr}`, parts.join('\n'));
+  await sendEmail(EMAIL_TO, `Ukentlig oppsummering – ${dateStr}`, parts.join('\n'));
   console.log('✓ Ukentlig sendt');
 }
 
@@ -583,17 +535,6 @@ async function runWeekly() {
     console.log('\nFerdig.');
   } catch (e) {
     console.error('\nFEIL:', e.message);
-    if (e.message.includes('token utløpt') || e.message.includes('refresh_token') || e.message.includes('invalid_grant')) {
-      console.error('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.error('GMAIL TOKEN MÅ FORNYES – følg disse stegene:');
-      console.error('1. Åpne Nyhetsagent-appen på PC-en');
-      console.error('2. Gå til myaccount.google.com/permissions');
-      console.error('3. Fjern tilgangen til Nyhetsagent');
-      console.error('4. Koble til Gmail på nytt i appen');
-      console.error('5. Kopier innhold av Dokumenter\\Nyhetsagent\\gmail_token.json');
-      console.error('6. Oppdater GMAIL_TOKEN-secret på GitHub under Settings → Secrets');
-      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-    }
     process.exit(1);
   }
 })();
