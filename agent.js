@@ -68,6 +68,8 @@ const FEEDS = [
   { name:'Slash Film',      url:'https://www.slashfilm.com/feed/',                                                 cat:'film'    },
   { name:'Film Inquiry',    url:'https://filminquiry.com/feed/',                                                   cat:'film'    },
   { name:'Movieweb',        url:'https://movieweb.com/feed/',                                                      cat:'film'    },
+  { name:'Reddit Trailers', url:'https://www.reddit.com/r/trailers/.rss',                                           cat:'film'    },
+  { name:'Moviefone Trailers', url:'https://www.moviefone.com/feeds/trailers.rss',                                  cat:'film'    },
   { name:'Pitchfork',       url:'https://pitchfork.com/feed/rss',                                                  cat:'musikk'  },
   { name:'Consequence',     url:'https://consequenceofsound.net/feed/',                                            cat:'musikk'  },
   { name:'Metal Injection', url:'https://metalinjection.net/feed',                                                 cat:'musikk'  },
