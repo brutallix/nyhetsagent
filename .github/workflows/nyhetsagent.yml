@@ -1,8 +1,6 @@
 name: Nyhetsagent
 
 on:
-  schedule:
-    - cron: '0 7 * * 5'   # Fredag 08:00 Oslo (vintertid) – ukentlig oppsummering
   workflow_dispatch:
     inputs:
       mode:
@@ -48,12 +46,13 @@ jobs:
       - name: Run agent
         env:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
-          SENDGRID_FROM_EMAIL: ${{ secrets.SENDGRID_FROM_EMAIL }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_FROM_EMAIL: ${{ secrets.BREVO_FROM_EMAIL }}
           ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           ENABLED_FEEDS: ${{ secrets.ENABLED_FEEDS }}
-        # Schedule-trigger har ingen inputs – da er modus alltid weekly (fredag)
-        run: node agent.js ${{ github.event.inputs.mode || 'weekly' }}
+        run: node agent.js ${{ github.event.inputs.mode }}
 
       - name: Save state to repo
         if: always()
