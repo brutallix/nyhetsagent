@@ -4,11 +4,13 @@
  * Nyhetsagent – GitHub Actions-versjon (synkronisert med _20)
  *
  * Påkrevde GitHub Secrets:
- *   SENDGRID_API_KEY    – API-nøkkel fra app.sendgrid.com (starter med SG.)
+ *   BREVO_API_KEY       – API-nøkkel fra app.brevo.com (starter med xkeysib-)
  *   EMAIL_TO            – din e-postadresse
  *
  * Valgfrie secrets:
+ *   BREVO_FROM_EMAIL    – verifisert avsenderadresse i Brevo (standard: EMAIL_TO)
  *   ANTHROPIC_KEY
+ *   SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET
  *   ENABLED_FEEDS  – kommaseparert liste over feeder (standard: alle nyheter)
  */
 
@@ -19,9 +21,11 @@ const http  = require('http');
 
 const MODE       = process.argv[2] || 'alerts';
 const EMAIL_TO   = process.env.EMAIL_TO                || '';
-const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY  || '';
-const EMAIL_FROM = process.env.SENDGRID_FROM_EMAIL     || EMAIL_TO;
+const BREVO_API_KEY = process.env.BREVO_API_KEY        || '';
+const EMAIL_FROM = process.env.BREVO_FROM_EMAIL        || EMAIL_TO;
 const ANTHROPIC  = process.env.ANTHROPIC_KEY           || '';
+const SPOTIFY_ID = process.env.SPOTIFY_CLIENT_ID       || '';
+const SPOTIFY_SC = process.env.SPOTIFY_CLIENT_SECRET   || '';
 
 const SENT_FILE = '/tmp/nyhetsagent_sent.json';
 const LAST_FILE = '/tmp/nyhetsagent_last_email.json';
@@ -49,6 +53,7 @@ const FEEDS = [
   { name:'Nettavisen',      url:'https://www.nettavisen.no/service/rss',                                           cat:'nyheter' },
   { name:'TLDR Tech',       url:'https://tldr.tech/api/rss/tech',                                                  cat:'nyheter' },
   { name:'TLDR AI',         url:'https://tldr.tech/api/rss/ai',                                                    cat:'nyheter' },
+  { name:'Wired',           url:'https://www.wired.com/feed/rss',                                                  cat:'nyheter' },
   { name:'Ars Technica',    url:'https://feeds.arstechnica.com/arstechnica/index',                                 cat:'nyheter' },
   { name:'TechCrunch',      url:'https://techcrunch.com/feed/',                                                    cat:'nyheter' },
   { name:'MIT Tech Review', url:'https://www.technologyreview.com/feed/',                                          cat:'nyheter' },
@@ -64,19 +69,13 @@ const FEEDS = [
   { name:'Slash Film',      url:'https://www.slashfilm.com/feed/',                                                 cat:'film'    },
   { name:'Film Inquiry',    url:'https://filminquiry.com/feed/',                                                   cat:'film'    },
   { name:'Movieweb',        url:'https://movieweb.com/feed/',                                                      cat:'film'    },
-  { name:'Reddit Trailers', url:'https://www.reddit.com/r/trailers/.rss',                                           cat:'trailere'},
-  { name:'Moviefone Trailers', url:'https://www.moviefone.com/feeds/trailers.rss',                                  cat:'trailere'},
-  { name:'FilmJabber Trailers', url:'https://www.filmjabber.com/rss/rss-trailers.php',                              cat:'trailere'},
+  { name:'Reddit Trailers', url:'https://www.reddit.com/r/trailers/.rss',                                           cat:'film'    },
+  { name:'Moviefone Trailers', url:'https://www.moviefone.com/feeds/trailers.rss',                                  cat:'film'    },
   { name:'Pitchfork',       url:'https://pitchfork.com/feed/rss',                                                  cat:'musikk'  },
   { name:'Consequence',     url:'https://consequenceofsound.net/feed/',                                            cat:'musikk'  },
   { name:'Metal Injection', url:'https://metalinjection.net/feed',                                                 cat:'musikk'  },
   { name:'PopMatters',      url:'https://www.popmatters.com/feed/',                                                cat:'musikk'  },
-  { name:'Kerrang!',        url:'https://news.google.com/rss/search?q=site:kerrang.com+%22album+review%22+when:14d&hl=en-US&gl=US&ceid=US:en', cat:'album' },
-  { name:'Metal Hammer',    url:'https://www.loudersound.com/feeds/all',                                           cat:'album'   },
 ];
-
-// Apple TV sin trailer-side har ingen RSS – legges inn som fast lenke i fredagsmailen
-const APPLE_TRAILERS_URL = 'https://tv.apple.com/us/room/movie--tv-trailers/edt.item.64248313-7414-4d63-a6fc-7c29f9916c79';
 
 const ROUTES = [
   { name:'Politikk',      keywords:['regjeringen','stortinget','statsminister','valg','minister','høyre','frp','arbeiderpartiet','government','election','president','congress','trump'] },
@@ -220,44 +219,6 @@ function dedupItems(items) {
   });
 }
 
-// Dedupliker like trailere på tvers av feeder ("'The Odyssey' Digital Trailer"
-// vs "The Odyssey | Official Trailer (2026)" regnes som samme film)
-const TRAILER_NOISE_WORDS = new Set([
-  'trailer','trailers','teaser','teasers','official','digital','final','exclusive',
-  'featurette','clip','preview','promo','first','look','movie','film','video','new',
-  'intl','international','red','band','hd','4k','season','episode','series',
-]);
-
-function trailerKey(title) {
-  return normalizeTitle(title)
-    .replace(/[|()#'’"]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w && !TRAILER_NOISE_WORDS.has(w) && !/^\d+$/.test(w))
-    .sort().join(' ');
-}
-
-function dedupTrailers(items) {
-  const seen = new Set();
-  return dedupItems(items).filter(i => {
-    const key = trailerKey(i.title);
-    if (!key) return true;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-// Bland kilder jevnt (annenhver) slik at én feed ikke fortrenger de andre
-function interleaveBySource(items) {
-  const groups = {};
-  for (const i of items) (groups[i.source] = groups[i.source] || []).push(i);
-  const lists = Object.values(groups);
-  const out = [];
-  for (let n = 0; lists.some(l => n < l.length); n++)
-    for (const l of lists) if (n < l.length) out.push(l[n]);
-  return out;
-}
-
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 
 function fetchUrl(url) {
@@ -271,8 +232,11 @@ function fetchUrl(url) {
       },
       timeout: 15000,
     }, res => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location)
-        return fetchUrl(res.headers.location).then(resolve).catch(reject);
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        // Håndter relative redirects (f.eks. VG svarer med "Location: /rss/feed")
+        const target = new URL(res.headers.location, url).toString();
+        return fetchUrl(target).then(resolve).catch(reject);
+      }
       if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
       const c = []; res.on('data', d => c.push(d));
       res.on('end', () => resolve(Buffer.concat(c).toString('utf-8')));
@@ -314,9 +278,7 @@ async function resolveGoogleNewsUrl(link) {
         timeout: 5000,
       }, res => {
         res.resume();
-        // consent.google.com-redirect (EU) gir ubrukelig lenke – behold originalen
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location
-            && !res.headers.location.includes('consent.google')) {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           resolve(res.headers.location);
         } else {
           resolve(link);
@@ -347,26 +309,6 @@ function cleanLink(link) {
   return link;
 }
 
-// Finn bilde-URL i et RSS/Atom-item (media:thumbnail, enclosure, <img> osv.)
-function extractImage(b) {
-  const patterns = [
-    /<media:thumbnail[^>]+url=["']([^"']+)["']/i,
-    /<thumbnail[^>]+url=["']([^"']+)["']/i,
-    /<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i,
-    /<media:content[^>]+medium=["']image["'][^>]*url=["']([^"']+)["']/i,
-    /<media:content[^>]+url=["']([^"']+\.(?:jpe?g|png|webp|gif)[^"']*)["']/i,
-    /<enclosure[^>]+url=["']([^"']+)["'][^>]*type=["']image\/[^"']*["']/i,
-    /<enclosure[^>]+type=["']image\/[^"']*["'][^>]*url=["']([^"']+)["']/i,
-    /<img[^>]+src=["'](https?:\/\/[^"']+)["']/i,
-    /&lt;img[^&]*?src=(?:["']|&quot;)(https?:\/\/[^"'&]+)/i,
-  ];
-  for (const re of patterns) {
-    const m = b.match(re);
-    if (m && m[1]) return decode(m[1]);
-  }
-  return '';
-}
-
 function parseRSS(xml, src) {
   const items = [];
   const isAtom = xml.includes('xmlns="http://www.w3.org/2005/Atom"');
@@ -377,8 +319,7 @@ function parseRSS(xml, src) {
       const gt = tag => { const r = b.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i')); return r ? decode(r[1].replace(/<[^>]+>/g,'').trim()) : ''; };
       const title = gt('title'); if (!title) continue;
       const lm = b.match(/<link[^>]+href=["']([^"']+)["']/i);
-      const cats = [...b.matchAll(/<category[^>]+term=["']([^"']+)["']/gi)].map(c => decode(c[1]));
-      items.push({ source:src, title, description:(gt('summary')||gt('content')).replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(lm?lm[1]:''), pubDate:(gt('published')||gt('updated')).slice(0,25), image:extractImage(b), categories:cats, routes:[] });
+      items.push({ source:src, title, description:(gt('summary')||gt('content')).replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(lm?lm[1]:''), pubDate:(gt('published')||gt('updated')).slice(0,25), routes:[] });
       if (items.length >= 25) break;
     }
   } else {
@@ -387,8 +328,7 @@ function parseRSS(xml, src) {
       const b = m[1];
       const g = tag => { const r = b.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([^<]*)<\\/${tag}>`, 'i')); return r ? decode((r[1]||r[2]||'').trim()) : ''; };
       const title = g('title'); if (!title) continue;
-      const cats = [...b.matchAll(/<category[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/category>/gi)].map(c => decode(c[1]).trim());
-      items.push({ source:src, title, description:g('description').replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(g('link')||g('guid')), pubDate:g('pubDate').slice(0,25), image:extractImage(b), categories:cats, routes:[] });
+      items.push({ source:src, title, description:g('description').replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(g('link')||g('guid')), pubDate:g('pubDate').slice(0,25), routes:[] });
       if (items.length >= 25) break;
     }
   }
@@ -422,57 +362,26 @@ async function fetchFeeds(cat) {
   return { items: dedupItems(results), errors };
 }
 
-// ── SendGrid e-post ───────────────────────────────────────────────────────────
+// ── Brevo e-post ──────────────────────────────────────────────────────────────
 
-function escHtml(s) {
-  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function itemHtml(i) {
-  const title = i.link
-    ? `<a href="${escHtml(i.link)}" style="color:#0b57d0;text-decoration:none">${escHtml(i.title)}</a>`
-    : escHtml(i.title);
-  const img = i.image
-    ? (i.link ? `<a href="${escHtml(i.link)}">` : '')
-      + `<img src="${escHtml(i.image)}" alt="" width="320" style="max-width:100%;height:auto;border-radius:6px;display:block;margin:6px 0">`
-      + (i.link ? '</a>' : '')
-    : '';
-  const desc = i.description
-    ? `<div style="color:#555;font-size:13px;margin-top:2px">${escHtml(i.description.slice(0,200))}</div>`
-    : '';
-  return `<div style="margin:0 0 16px 0"><div><span style="color:#888">[${escHtml(i.source)}]</span> <strong>${title}</strong></div>${img}${desc}</div>`;
-}
-
-function sectionHtml(title, inner) {
-  return `<h2 style="font-size:16px;color:#222;border-bottom:2px solid #e0e0e0;padding-bottom:4px;margin:24px 0 12px">${escHtml(title)}</h2>${inner}`;
-}
-
-function htmlWrap(title, inner) {
-  return '<html><body style="margin:0;padding:16px;background:#ffffff">'
-    + '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;max-width:680px;margin:0 auto">'
-    + `<h1 style="font-size:20px;margin:0 0 16px">${escHtml(title)}</h1>${inner}`
-    + '<p style="color:#999;font-size:12px;margin-top:24px">Nyhetsagent</p></div></body></html>';
-}
-
-async function sendEmail(to, subject, bodyText, bodyHtml) {
-  if (!SENDGRID_API_KEY) throw new Error('SENDGRID_API_KEY mangler – legg inn som GitHub Secret');
-  const html = bodyHtml
-    || '<html><body><pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;word-wrap:break-word">'
+async function sendEmail(to, subject, bodyText) {
+  if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY mangler – legg inn som GitHub Secret');
+  const html = '<html><body><pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;word-wrap:break-word">'
     + bodyText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     + '</pre></body></html>';
   const payload = JSON.stringify({
-    personalizations: [{ to: [{ email: to }] }],
-    from: { email: EMAIL_FROM },
+    sender: { name: 'Nyhetsagent', email: EMAIL_FROM },
+    to: [{ email: to }],
     subject,
-    content: [{ type: 'text/html', value: html }],
+    htmlContent: html,
   });
   return new Promise((resolve, reject) => {
     const req = https.request({
-      hostname: 'api.sendgrid.com',
-      path: '/v3/mail/send',
+      hostname: 'api.brevo.com',
+      path: '/v3/smtp/email',
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${SENDGRID_API_KEY}`,
+        'api-key': BREVO_API_KEY,
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
       }
@@ -480,7 +389,7 @@ async function sendEmail(to, subject, bodyText, bodyHtml) {
       const c = []; res.on('data', d => c.push(d));
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) resolve();
-        else reject(new Error(`SendGrid feilet: HTTP ${res.statusCode} – ${Buffer.concat(c).toString()}`));
+        else reject(new Error(`Brevo feilet: HTTP ${res.statusCode} – ${Buffer.concat(c).toString()}`));
       });
     });
     req.on('error', reject); req.write(payload); req.end();
@@ -512,16 +421,6 @@ function buildBody(label, items, summary) {
     : `${label} – ${now}\n\n${itemList}\n\n─────\nNyhetsagent`;
 }
 
-function buildBodyHtml(label, items, summary) {
-  const now    = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
-  const sorted = sortBySource(items.slice(0,25));
-  const sumHtml = summary
-    ? `<div style="background:#f5f7fa;border-left:4px solid #0b57d0;padding:10px 14px;border-radius:4px;white-space:pre-wrap">${escHtml(summary)}</div>`
-    : '';
-  return htmlWrap(`${label} – ${now}`,
-    sumHtml + sectionHtml(`Alle saker (${sorted.length})`, sorted.map(itemHtml).join('')));
-}
-
 // ── Moduser ───────────────────────────────────────────────────────────────────
 
 async function runAlerts() {
@@ -549,9 +448,7 @@ async function runAlerts() {
       `• ${i.title}${i.description ? '\n  ' + i.description.slice(0,150) : ''}${i.link ? '\n  ' + i.link : ''}`
     ).join('\n\n')
   ).join('\n\n');
-  const htmlBody = htmlWrap(`${filtered.length} nye varsler – ${now}`,
-    sourceOrder.map(src => sectionHtml(src, grouped[src].map(itemHtml).join(''))).join(''));
-  await sendEmail(EMAIL_TO, `Nyhetsagent: ${filtered.length} nye varsler – ${now}`, body, htmlBody);
+  await sendEmail(EMAIL_TO, `Nyhetsagent: ${filtered.length} nye varsler – ${now}`, body);
   console.log(`✓ Sendt ${filtered.length} varsler`);
   filtered.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -575,7 +472,7 @@ async function runMorning() {
   if (!night.length) { console.log('Ingen nattlige nyheter.'); return; }
   const summary = await aiSummary(night);
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendEmail(EMAIL_TO, `Morgenoppsummering – ${dateStr}`, buildBody('Morgenoppsummering', night, summary), buildBodyHtml('Morgenoppsummering', night, summary));
+  await sendEmail(EMAIL_TO, `Morgenoppsummering – ${dateStr}`, buildBody('Morgenoppsummering', night, summary));
   console.log(`✓ Morgenoppsummering sendt (${night.length} saker)`);
   night.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -592,7 +489,7 @@ async function runEvening() {
   if (!day.length) { console.log('Ingen nye dagsaker.'); return; }
   const summary = await aiSummary(day);
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendEmail(EMAIL_TO, `Kveldoppsummering – ${dateStr}`, buildBody('Kveldoppsummering', day, summary), buildBodyHtml('Kveldoppsummering', day, summary));
+  await sendEmail(EMAIL_TO, `Kveldoppsummering – ${dateStr}`, buildBody('Kveldoppsummering', day, summary));
   console.log(`✓ Kveldoppsummering sendt (${day.length} saker)`);
   day.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -601,51 +498,35 @@ async function runEvening() {
 async function runWeekly() {
   console.log('Modus: ukentlig');
   if (!EMAIL_TO) throw new Error('EMAIL_TO mangler');
-  const [{ items: film }, { items: musikk }, { items: trailerItems }, { items: albumItems }] = await Promise.all([
-    fetchFeeds('film'), fetchFeeds('musikk'), fetchFeeds('trailere'), fetchFeeds('album'),
-  ]);
-
-  // Trailere: fjern duplikater av samme film på tvers av feeder
-  const trailere = interleaveBySource(dedupTrailers(trailerItems)).slice(0, 15);
-
-  // Album anbefalt av Kerrang! og Metal Hammer (Louder) siste 14 dager
-  const albumCut = Date.now() - 14 * 24 * 60 * 60 * 1000;
-  const album = interleaveBySource(albumItems
-    .filter(i => i.source === 'Kerrang!'
-      ? /album review/i.test(i.title) && !/^album reviews?$/i.test(i.title.replace(/\s*-\s*Kerrang!?\s*$/i, '').trim())
-      : (i.categories || []).includes('Albums'))
-    .filter(i => { const t = new Date(i.pubDate).getTime(); return isNaN(t) || t > albumCut; })
-    .map(i => ({ ...i, title: i.title.replace(/\s*-\s*(Kerrang!?|Louder)\s*$/i, '') })))
-    .slice(0, 12);
-
-  const now     = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
-  const txtItem = i => `• [${i.source}] ${i.title}${i.link ? '\n  ' + i.link : ''}`;
-  const parts     = [`Ukentlig oppsummering – ${now}\n`];
-  const htmlParts = [];
-  const filmTop   = film.slice(0,15);
-  const musikkTop = musikk.slice(0,15);
-
-  if (filmTop.length) {
-    parts.push('═══ FILM & SERIER ═══\n' + filmTop.map(txtItem).join('\n\n'));
-    htmlParts.push(sectionHtml('Film & serier', filmTop.map(itemHtml).join('')));
+  const [{ items: film }, { items: musikk }] = await Promise.all([fetchFeeds('film'), fetchFeeds('musikk')]);
+  let spotifyList = null;
+  if (SPOTIFY_ID && SPOTIFY_SC) {
+    try {
+      const tr = await httpsPost('accounts.spotify.com', '/api/token',
+        { 'Content-Type':'application/x-www-form-urlencoded', 'Authorization':'Basic ' + Buffer.from(`${SPOTIFY_ID}:${SPOTIFY_SC}`).toString('base64') },
+        'grant_type=client_credentials'
+      );
+      const { access_token } = JSON.parse(tr.body);
+      const get = p => new Promise((res, rej) => {
+        const req = https.request({ hostname:'api.spotify.com', path:p, headers:{ 'Authorization':`Bearer ${access_token}` } }, resp => {
+          const c = []; resp.on('data', d => c.push(d)); resp.on('end', () => res(JSON.parse(Buffer.concat(c).toString())));
+        }); req.on('error', rej); req.end();
+      });
+      const pl = await get('/v1/playlists/37i9dQZEVXbMDoHDwVN2tF/tracks?limit=50&fields=items(track(name,artists,popularity))');
+      spotifyList = (pl.items||[]).map(i => i.track).filter(Boolean)
+        .sort((a, b) => b.popularity - a.popularity).slice(0, 20)
+        .map((t, i) => `${i+1}. ${t.name} – ${t.artists.map(a => a.name).join(', ')}`).join('\n');
+    } catch (e) { console.error('Spotify feilet:', e.message); }
   }
-  const appleLinkTxt  = `• Flere trailere: Apple TV – Movie & TV Trailers\n  ${APPLE_TRAILERS_URL}`;
-  const appleLinkHtml = `<div style="margin:0 0 16px 0"><a href="${escHtml(APPLE_TRAILERS_URL)}" style="color:#0b57d0">Flere trailere: Apple TV – Movie &amp; TV Trailers</a></div>`;
-  parts.push('\n\n═══ TRAILERE ═══\n' + [...trailere.map(txtItem), appleLinkTxt].join('\n\n'));
-  htmlParts.push(sectionHtml('Trailere', trailere.map(itemHtml).join('') + appleLinkHtml));
-  if (musikkTop.length) {
-    parts.push('\n\n═══ MUSIKK ═══\n' + musikkTop.map(txtItem).join('\n\n'));
-    htmlParts.push(sectionHtml('Musikk', musikkTop.map(itemHtml).join('')));
-  }
-  if (album.length) {
-    parts.push('\n\n═══ NYE ALBUM – KERRANG! & METAL HAMMER ═══\n' + album.map(txtItem).join('\n\n'));
-    htmlParts.push(sectionHtml('Nye album – Kerrang! & Metal Hammer', album.map(itemHtml).join('')));
-  }
+  const now   = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
+  const parts = [`Ukentlig oppsummering – ${now}\n`];
+  if (film.length)   parts.push('═══ FILM & SERIER ═══\n' + film.slice(0,15).map(i => `• [${i.source}] ${i.title}${i.link ? '\n  ' + i.link : ''}`).join('\n\n'));
+  if (musikk.length) parts.push('\n\n═══ MUSIKK ═══\n' + musikk.slice(0,15).map(i => `• [${i.source}] ${i.title}${i.link ? '\n  ' + i.link : ''}`).join('\n\n'));
+  if (spotifyList)   parts.push('\n\n═══ SPOTIFY – TRENDENDE LÅTER ═══\n' + spotifyList);
   parts.push('\n\n─────\nNyhetsagent');
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendEmail(EMAIL_TO, `Ukentlig oppsummering – ${dateStr}`, parts.join('\n'),
-    htmlWrap(`Ukentlig oppsummering – ${now}`, htmlParts.join('')));
-  console.log(`✓ Ukentlig sendt (${filmTop.length} film, ${trailere.length} trailere, ${musikkTop.length} musikk, ${album.length} album)`);
+  await sendEmail(EMAIL_TO, `Ukentlig oppsummering – ${dateStr}`, parts.join('\n'));
+  console.log('✓ Ukentlig sendt');
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
