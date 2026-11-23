@@ -309,6 +309,16 @@ function cleanLink(link) {
   return link;
 }
 
+// Hent artikkelbilde fra media:content, media:thumbnail, enclosure eller <img>
+function extractImage(block) {
+  const m = block.match(/<media:content[^>]+url=["']([^"']+)["']/i)
+         || block.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i)
+         || block.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]*type=["']image\//i)
+         || block.match(/<enclosure[^>]+type=["']image\/[^"']*["'][^>]*url=["']([^"']+)["']/i)
+         || block.match(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/i);
+  return m ? decode(m[1]) : '';
+}
+
 function parseRSS(xml, src) {
   const items = [];
   const isAtom = xml.includes('xmlns="http://www.w3.org/2005/Atom"');
@@ -319,7 +329,7 @@ function parseRSS(xml, src) {
       const gt = tag => { const r = b.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i')); return r ? decode(r[1].replace(/<[^>]+>/g,'').trim()) : ''; };
       const title = gt('title'); if (!title) continue;
       const lm = b.match(/<link[^>]+href=["']([^"']+)["']/i);
-      items.push({ source:src, title, description:(gt('summary')||gt('content')).replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(lm?lm[1]:''), pubDate:(gt('published')||gt('updated')).slice(0,25), routes:[] });
+      items.push({ source:src, title, description:(gt('summary')||gt('content')).replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(lm?lm[1]:''), pubDate:(gt('published')||gt('updated')).slice(0,25), image:extractImage(b), routes:[] });
       if (items.length >= 25) break;
     }
   } else {
@@ -328,7 +338,7 @@ function parseRSS(xml, src) {
       const b = m[1];
       const g = tag => { const r = b.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([^<]*)<\\/${tag}>`, 'i')); return r ? decode((r[1]||r[2]||'').trim()) : ''; };
       const title = g('title'); if (!title) continue;
-      items.push({ source:src, title, description:g('description').replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(g('link')||g('guid')), pubDate:g('pubDate').slice(0,25), routes:[] });
+      items.push({ source:src, title, description:g('description').replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim().slice(0,250), link:cleanLink(g('link')||g('guid')), pubDate:g('pubDate').slice(0,25), image:extractImage(b), routes:[] });
       if (items.length >= 25) break;
     }
   }
@@ -364,16 +374,45 @@ async function fetchFeeds(cat) {
 
 // ── Brevo e-post ──────────────────────────────────────────────────────────────
 
-async function sendEmail(to, subject, bodyText) {
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Én artikkel som HTML-rad med miniatyrbilde
+function itemHtml(i, opts = {}) {
+  const img = i.image
+    ? `<td valign="top" width="120" style="padding:0 12px 0 0;"><a href="${esc(i.link||'#')}"><img src="${esc(i.image)}" width="120" alt="" style="width:120px;height:auto;border-radius:6px;display:block;"></a></td>`
+    : '';
+  const src = opts.showSource === false ? '' : `<span style="color:#888;font-size:12px;">[${esc(i.source)}]</span> `;
+  const title = i.link
+    ? `<a href="${esc(i.link)}" style="color:#0b57d0;text-decoration:none;font-weight:bold;">${esc(i.title)}</a>`
+    : `<strong>${esc(i.title)}</strong>`;
+  const desc = opts.withDesc !== false && i.description
+    ? `<div style="color:#444;font-size:13px;line-height:1.4;margin-top:4px;">${esc(i.description.slice(0,150))}</div>`
+    : '';
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 0 14px 0;"><tr>${img}<td valign="top" style="font-family:Arial,sans-serif;font-size:14px;line-height:1.4;">${src}${title}${desc}</td></tr></table>`;
+}
+
+function sectionHtml(heading) {
+  return `<h3 style="font-family:Arial,sans-serif;font-size:15px;margin:18px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px;">${esc(heading)}</h3>`;
+}
+
+function wrapHtml(inner) {
+  return `<html><body style="margin:0;padding:16px;background:#ffffff;font-family:Arial,sans-serif;">${inner}<div style="color:#999;font-size:12px;margin-top:20px;">─────<br>Nyhetsagent</div></body></html>`;
+}
+
+async function sendEmail(to, subject, bodyText, htmlBody) {
   if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY mangler – legg inn som GitHub Secret');
-  const html = '<html><body><pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;word-wrap:break-word">'
-    + bodyText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    + '</pre></body></html>';
+  const html = htmlBody
+    || '<html><body><pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;word-wrap:break-word">'
+       + esc(bodyText)
+       + '</pre></body></html>';
   const payload = JSON.stringify({
     sender: { name: 'Nyhetsagent', email: EMAIL_FROM },
     to: [{ email: to }],
     subject,
     htmlContent: html,
+    textContent: bodyText,
   });
   return new Promise((resolve, reject) => {
     const req = https.request({
@@ -421,6 +460,16 @@ function buildBody(label, items, summary) {
     : `${label} – ${now}\n\n${itemList}\n\n─────\nNyhetsagent`;
 }
 
+function buildHtmlBody(label, items, summary) {
+  const now    = new Date().toLocaleString('nb-NO', { timeZone:'Europe/Oslo' });
+  const sorted = sortBySource(items.slice(0,25));
+  let inner = `<h2 style="font-family:Arial,sans-serif;font-size:18px;margin:0 0 12px;">${esc(label)} – ${esc(now)}</h2>`;
+  if (summary) inner += `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap;background:#f5f5f5;border-radius:8px;padding:12px;margin-bottom:16px;">${esc(summary)}</div>`;
+  inner += sectionHtml(`Alle saker (${sorted.length})`);
+  inner += sorted.map(i => itemHtml(i)).join('');
+  return wrapHtml(inner);
+}
+
 // ── Moduser ───────────────────────────────────────────────────────────────────
 
 async function runAlerts() {
@@ -448,7 +497,10 @@ async function runAlerts() {
       `• ${i.title}${i.description ? '\n  ' + i.description.slice(0,150) : ''}${i.link ? '\n  ' + i.link : ''}`
     ).join('\n\n')
   ).join('\n\n');
-  await sendEmail(EMAIL_TO, `Nyhetsagent: ${filtered.length} nye varsler – ${now}`, body);
+  const htmlBody = wrapHtml(sourceOrder.map(src =>
+    sectionHtml(src) + grouped[src].map(i => itemHtml(i, { showSource:false })).join('')
+  ).join(''));
+  await sendEmail(EMAIL_TO, `Nyhetsagent: ${filtered.length} nye varsler – ${now}`, body, htmlBody);
   console.log(`✓ Sendt ${filtered.length} varsler`);
   filtered.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -472,7 +524,7 @@ async function runMorning() {
   if (!night.length) { console.log('Ingen nattlige nyheter.'); return; }
   const summary = await aiSummary(night);
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendEmail(EMAIL_TO, `Morgenoppsummering – ${dateStr}`, buildBody('Morgenoppsummering', night, summary));
+  await sendEmail(EMAIL_TO, `Morgenoppsummering – ${dateStr}`, buildBody('Morgenoppsummering', night, summary), buildHtmlBody('Morgenoppsummering', night, summary));
   console.log(`✓ Morgenoppsummering sendt (${night.length} saker)`);
   night.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -489,7 +541,7 @@ async function runEvening() {
   if (!day.length) { console.log('Ingen nye dagsaker.'); return; }
   const summary = await aiSummary(day);
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendEmail(EMAIL_TO, `Kveldoppsummering – ${dateStr}`, buildBody('Kveldoppsummering', day, summary));
+  await sendEmail(EMAIL_TO, `Kveldoppsummering – ${dateStr}`, buildBody('Kveldoppsummering', day, summary), buildHtmlBody('Kveldoppsummering', day, summary));
   console.log(`✓ Kveldoppsummering sendt (${day.length} saker)`);
   day.forEach(i => { sent[sentKey(i)] = Date.now(); if (i.link) sent[i.link.split('?')[0].toLowerCase()] = Date.now(); });
   saveSent(sent);
@@ -524,8 +576,12 @@ async function runWeekly() {
   if (musikk.length) parts.push('\n\n═══ MUSIKK ═══\n' + musikk.slice(0,15).map(i => `• [${i.source}] ${i.title}${i.link ? '\n  ' + i.link : ''}`).join('\n\n'));
   if (spotifyList)   parts.push('\n\n═══ SPOTIFY – TRENDENDE LÅTER ═══\n' + spotifyList);
   parts.push('\n\n─────\nNyhetsagent');
+  let weeklyHtml = `<h2 style="font-family:Arial,sans-serif;font-size:18px;margin:0 0 12px;">Ukentlig oppsummering – ${esc(now)}</h2>`;
+  if (film.length)   weeklyHtml += sectionHtml('FILM & SERIER') + film.slice(0,15).map(i => itemHtml(i)).join('');
+  if (musikk.length) weeklyHtml += sectionHtml('MUSIKK') + musikk.slice(0,15).map(i => itemHtml(i)).join('');
+  if (spotifyList)   weeklyHtml += sectionHtml('SPOTIFY – TRENDENDE LÅTER') + `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;">${esc(spotifyList)}</pre>`;
   const dateStr = new Date().toLocaleDateString('nb-NO', { timeZone:'Europe/Oslo' });
-  await sendEmail(EMAIL_TO, `Ukentlig oppsummering – ${dateStr}`, parts.join('\n'));
+  await sendEmail(EMAIL_TO, `Ukentlig oppsummering – ${dateStr}`, parts.join('\n'), wrapHtml(weeklyHtml));
   console.log('✓ Ukentlig sendt');
 }
 
